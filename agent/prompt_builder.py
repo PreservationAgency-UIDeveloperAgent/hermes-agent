@@ -1959,75 +1959,136 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         return ""
 
 
+def _walk_up_for_context_files(start: Path, target_names: tuple, stop_dir: Optional[Path] = None) -> list[Path]:
+    """Walk up from *start* collecting files matching *target_names*.
+
+    Starts at *start*, then moves up via ``Path.parent`` at each step.
+    Stops when reaching the user's home directory (``Path.home()``) or an
+    optional *stop_dir* (whichever comes first).  Returns files in
+    *start-to-root* order (i.e. cwd first).
+    """
+    found: list[Path] = []
+    visited: set[Path] = set()
+    current = start.resolve()
+    home = Path.home().resolve()
+    stop = stop_dir.resolve() if stop_dir else None
+    while True:
+        if current in visited:
+            break
+        visited.add(current)
+        for name in target_names:
+            candidate = current / name
+            if candidate.exists() and candidate not in found:
+                found.append(candidate)
+        if current == home or current == stop or current == current.parent:
+            break
+        current = current.parent
+    return found
+
+
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+    """AGENTS.md — walk up the directory tree collecting every ancestor match."""
+    names = ("AGENTS.md", "agents.md")
+    files = _walk_up_for_context_files(cwd_path, names)
+    if not files:
+        return ""
+    parts: list[str] = []
+    for f in files:
+        try:
+            content = f.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            content = _scan_context_content(content, f.name)
+            parts.append(f"## Context from {f}\n\n{content}")
+        except Exception as e:
+            logger.debug("Could not read %s: %s", f, e)
+    if not parts:
+        return ""
+    combined = "\n\n".join(parts)
+    return _truncate_content(combined, "AGENTS.md", context_length=context_length,
+                            read_path=str(files[0]))
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "CLAUDE.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+    """CLAUDE.md / claude.md — walk up the directory tree collecting every ancestor match."""
+    names = ("CLAUDE.md", "claude.md")
+    files = _walk_up_for_context_files(cwd_path, names)
+    if not files:
+        return ""
+    parts: list[str] = []
+    for f in files:
+        try:
+            content = f.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            content = _scan_context_content(content, f.name)
+            parts.append(f"## Context from {f}\n\n{content}")
+        except Exception as e:
+            logger.debug("Could not read %s: %s", f, e)
+    if not parts:
+        return ""
+    combined = "\n\n".join(parts)
+    return _truncate_content(combined, "CLAUDE.md", context_length=context_length,
+                            read_path=str(files[0]))
+
+
+def _walk_up_for_cursorrules(start: Path) -> list[Path]:
+    """Walk up collecting ``.cursorrules`` files and ``.cursor/rules/*.mdc`` trees.
+
+    Like :func:`_walk_up_for_context_files` but handles the two .cursorrules
+    artifact types: the bare ``.cursorrules`` at each directory level, and the
+    ``.cursor/rules/`` subtree rooted at each directory level.  Returns a flat
+    list of ``Path`` objects in start-to-root order, with the bare-file entry
+    coming first at each level.
+    """
+    found: list[Path] = []
+    visited: set[Path] = set()
+    current = start.resolve()
+    home = Path.home().resolve()
+    while True:
+        if current in visited:
+            break
+        visited.add(current)
+        # Bare .cursorrules at this level
+        bare = current / ".cursorrules"
+        if bare.exists() and bare not in found:
+            found.append(bare)
+        # .cursor/rules/*.mdc tree at this level
+        rules_dir = current / ".cursor" / "rules"
+        if rules_dir.exists() and rules_dir.is_dir():
+            for mdc_file in sorted(rules_dir.glob("*.mdc")):
+                if mdc_file not in found:
+                    found.append(mdc_file)
+        if current == home or current == current.parent:
+            break
+        current = current.parent
+    return found
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only."""
-    cursorrules_content = ""
-    cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
-        try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, ".cursorrules")
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
-
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
-        for mdc_file in mdc_files:
-            try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", mdc_file, e)
-
-    if not cursorrules_content:
+    """.cursorrules + .cursor/rules/*.mdc — walk up the directory tree."""
+    files = _walk_up_for_cursorrules(cwd_path)
+    if not files:
         return ""
-    return _truncate_content(
-        cursorrules_content, ".cursorrules", context_length=context_length,
-        read_path=str(cwd_path / ".cursorrules"),
-    )
+    parts: list[str] = []
+    for f in files:
+        try:
+            content = f.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            if f.name == ".cursorrules":
+                label = ".cursorrules"
+            else:
+                label = f".cursor/rules/{f.name}"
+            content = _scan_context_content(content, label)
+            parts.append(f"## {label}\n\n{content}")
+        except Exception as e:
+            logger.debug("Could not read %s: %s", f, e)
+    if not parts:
+        return ""
+    combined = "\n\n".join(parts)
+    return _truncate_content(combined, ".cursorrules", context_length=context_length,
+                            read_path=str(files[0]))
 
 
 def build_context_files_prompt(
